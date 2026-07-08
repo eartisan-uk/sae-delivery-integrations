@@ -51,8 +51,8 @@
 
     <menuitem id="menu_dpd_local_service"
               name="DPD Local Services"
-              parent="stock.menu_stock_config_settings"
+              parent="stock.menu_delivery"
               action="action_dpd_local_service"
-              sequence="100"/>
+              sequence="20"/>
 
 </odoo>
