@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """DPD Local delivery carrier using the current DPD UK REST API."""
 
-import base64
 import logging
 import re
 
@@ -732,30 +731,8 @@ class DeliveryCarrier(models.Model):
         tracking_number = ",".join(str(p) for p in parcel_numbers)
 
         ref = tracking_number or consignment_number or shipment_id
-        label_content, label_ext = self._dpd_local_fetch_label_content(
-            client, shipment_id)
-
-        # --- TEMP DEBUG: stash DPD's raw label source for layout diagnosis.
-        # Remove once label layout is finalised.
-        try:
-            debug_ext = "html" if self.dpd_local_label_format == "pdf" \
-                else label_ext
-            self.env["ir.attachment"].sudo().create({
-                "name": "DPD-label-source-%s.%s" % (ref, debug_ext),
-                "datas": base64.b64encode(label_content.encode("utf-8")),
-                "res_model": "sale.transport.leg",
-                "res_id": leg.id,
-                "mimetype": "text/plain",
-            })
-        except Exception:  # noqa: BLE001
-            _logger.exception("DPD Local: could not stash debug label source")
-        # --------------------------------------------------------------------
-
-        if self.dpd_local_label_format == "pdf":
-            label_bytes = self._dpd_local_html_to_pdf(label_content)
-        else:
-            label_bytes = label_content.encode("utf-8")
-        filename = "DPD-Local-Label-%s.%s" % (ref, label_ext)
+        label_bytes, filename = self._dpd_local_fetch_label_bytes(
+            client, shipment_id, ref)
 
         # Mirror the identifiers onto the picking for reference/back-compat.
         picking.write({
