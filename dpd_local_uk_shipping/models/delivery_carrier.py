@@ -386,7 +386,8 @@ class DeliveryCarrier(models.Model):
 
     def _dpd_local_prepare_payload(self, picking, shipper=None, recipient=None,
                                    service=None, shipment_date=None,
-                                   total_weight=None, reference=None):
+                                   total_weight=None, reference=None,
+                                   delivery_instructions=None):
         """Build a domestic shipment payload.
 
         ``shipper`` / ``recipient`` / ``service`` / ``shipment_date`` override
@@ -430,6 +431,10 @@ class DeliveryCarrier(models.Model):
                 "address": self._dpd_local_prepare_address(shipper),
             },
         }
+        # DPD label "Info" line (max 50 chars).
+        instructions = self._dpd_local_clean_string(delivery_instructions, 50)
+        if instructions:
+            outbound["deliveryInstructions"] = instructions
         if needs_customs:
             outbound["parcels"] = self._dpd_local_prepare_parcels(picking)
             outbound["shippersDestinationTaxId"] = self._dpd_local_clean_string(
@@ -706,12 +711,16 @@ class DeliveryCarrier(models.Model):
         # falling back to the delivery order name.
         reference = (leg.order_id.name if leg.order_id else False) \
             or picking.name
+        # Label "Info" line: the sale order's Delivery Note.
+        delivery_instructions = leg.order_id.deliver_note \
+            if leg.order_id else False
 
         payload = self._dpd_local_prepare_payload(
             picking, shipper=shipper, recipient=recipient, service=service,
             shipment_date=shipment_date and fields.Datetime.to_datetime(
                 shipment_date),
             total_weight=total_weight, reference=reference,
+            delivery_instructions=delivery_instructions,
         )
         client = DpdLocalApiClient(self)
         response = client.call_json(
