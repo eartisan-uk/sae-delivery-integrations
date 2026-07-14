@@ -70,7 +70,13 @@ class DpdLocalApiClient:
     """Stateless-ish HTTP wrapper. Tokens live on the carrier record."""
 
     def __init__(self, carrier):
-        self.carrier = carrier
+        # sudo: this client only reads/writes carrier config + token fields.
+        # dpd_local_access_token / dpd_local_refresh_token are admin-only
+        # (groups="base.group_system"), so a non-admin triggering a booking
+        # would trip the field ACL on read. The token is the machine
+        # credential for the API call, not user-facing data, so we access the
+        # carrier as superuser here. The field stays admin-only for view/edit.
+        self.carrier = carrier.sudo()
         env_key = carrier.dpd_local_environment or "sandbox"
         self.base_url = DPD_HOSTS.get(env_key, DPD_HOSTS["sandbox"])
 
@@ -164,7 +170,7 @@ class DpdLocalApiClient:
             raise ValidationError(
                 _("DPD Local authentication returned no access token.")
             )
-        self.carrier.sudo().write({
+        self.carrier.write({
             "dpd_local_access_token": access,
             "dpd_local_refresh_token": refresh,
             "dpd_local_token_expiry": decode_jwt_expiry(access) or 0,
