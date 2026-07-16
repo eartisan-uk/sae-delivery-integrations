@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_sale_transport_leg_form_apc" model="ir.ui.view">
+        <field name="name">sale.transport.leg.form.apc</field>
+        <field name="model">sale.transport.leg</field>
+        <field name="inherit_id" ref="sale_goods_order.sale_transport_leg_form_view"/>
+        <field name="arch" type="xml">
+            <field name="booking_ref" position="after">
+                <field name="apc_order_number"/>
+                <field name="apc_status_code"/>
+                <field name="apc_status_description"/>
+                <field name="apc_label_attachment_id"/>
+            </field>
+        </field>
+    </record>
+</odoo>
