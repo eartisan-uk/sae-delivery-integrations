@@ -345,9 +345,13 @@ class DeliveryCarrier(models.Model):
             })
         return [{"packageNumber": 1, "parcelProduct": parcel_products}]
 
-    def _dpd_local_number_of_parcels(self, picking):
-        packages = picking.move_line_ids.result_package_id
-        return len(packages) or 1
+    def _dpd_local_number_of_parcels(self, picking, order_line=None):
+        packages = picking.move_line_ids.result_package_id if picking else False
+        if packages:
+            return len(packages)
+        if order_line:
+            return order_line.package_qty or 1
+        return 1
 
     def _dpd_local_prepare_invoice(self, picking, shipper, recipient):
         return {
@@ -387,7 +391,7 @@ class DeliveryCarrier(models.Model):
     def _dpd_local_prepare_payload(self, picking, shipper=None, recipient=None,
                                    service=None, shipment_date=None,
                                    total_weight=None, reference=None,
-                                   delivery_instructions=None):
+                                   delivery_instructions=None, order_line=None):
         """Build a domestic shipment payload.
 
         ``shipper`` / ``recipient`` / ``service`` / ``shipment_date`` override
@@ -402,7 +406,7 @@ class DeliveryCarrier(models.Model):
         self._dpd_local_validate_party(_("Recipient"), recipient)
 
         needs_customs = self._dpd_local_needs_customs(shipper, recipient)
-        num_parcels = self._dpd_local_number_of_parcels(picking)
+        num_parcels = self._dpd_local_number_of_parcels(picking, order_line)
 
         outbound = {
             "consignmentNumber": None,
@@ -691,19 +695,25 @@ class DeliveryCarrier(models.Model):
         self.ensure_one()
         self._dpd_local_check_required_config()
         picking = leg.picking_id
-        if not picking:
+        if not picking and not leg.order_line_id:
             raise UserError(_(
-                "This leg has no linked Delivery Order to source parcels from."))
+                "This leg has no linked Delivery Order or Sale Order Line "
+                "to source parcels from."))
         shipper = self._dpd_local_leg_party(leg, "from")
         recipient = self._dpd_local_leg_party(leg, "to")
         service = self._dpd_local_service_for_leg(leg)
-        shipment_date = leg.from_date or picking.scheduled_date
+        # Transport Order legs have no picking (and so no scheduled_date);
+        # fall back to the sale order's promised delivery date.
+        shipment_date = leg.from_date or picking.scheduled_date \
+            or (leg.order_id.commitment_date if leg.order_id else False)
 
-        # Weight: real parcel weight if set, else the pricing option's
-        # chargeable weight, else a 0.1kg floor.
+        # Weight: real parcel weight (picking, or the SO line's total_weight
+        # when there's no picking, e.g. Transport Orders) if set, else the
+        # pricing option's chargeable weight, else a 0.1kg floor.
         option = leg.carrier_service_id
         total_weight = (
             picking.shipping_weight
+            or (leg.order_line_id.total_weight if leg.order_line_id else 0.0)
             or (option.chargeable_weight if option else 0.0)
             or 0.1
         )
@@ -721,6 +731,7 @@ class DeliveryCarrier(models.Model):
                 shipment_date),
             total_weight=total_weight, reference=reference,
             delivery_instructions=delivery_instructions,
+            order_line=leg.order_line_id,
         )
         client = DpdLocalApiClient(self)
         response = client.call_json(
@@ -744,10 +755,13 @@ class DeliveryCarrier(models.Model):
             client, shipment_id, ref)
 
         # Mirror the identifiers onto the picking for reference/back-compat.
-        picking.write({
-            "dpd_local_shipment_id": shipment_id,
-            "dpd_local_consignment_number": consignment_number,
-        })
+        # No picking on Transport Order legs; tracking_code/booking_ref on
+        # the leg itself (core) already carry these regardless.
+        if picking:
+            picking.write({
+                "dpd_local_shipment_id": shipment_id,
+                "dpd_local_consignment_number": consignment_number,
+            })
         return {
             "tracking": tracking_number,
             "consignment": consignment_number,

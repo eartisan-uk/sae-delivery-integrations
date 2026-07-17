@@ -205,15 +205,37 @@ class DeliveryCarrier(models.Model):
             return False
         return option.service_id.apc_product_code or False
 
-    def _apc_prepare_items(self, picking):
-        items = []
-        goods_value = 0.0
-        if picking.sale_id and picking.sale_id.order_line:
-            goods_value = picking.sale_id.amount_total or 0.0
+    def _apc_leg_goods_source(self, leg):
+        """Resolve the (picking, order_line, sale_order) a leg sources its
+        parcels/value/description from.
 
-        # Priority 1: sale.package.line (set on SO or picking)
-        package_lines = self.env["sale.package.line"].search(
-            [("picking_id", "=", picking.id)])
+        Goods Out legs have a picking. Transport Order legs (and any other
+        leg with no linked stock.picking) fall back to the SO line the leg
+        was generated from.
+        """
+        picking = leg.picking_id
+        order_line = leg.order_line_id
+        sale_order = (picking.sale_id if picking else False) or leg.order_id
+        return picking, order_line, sale_order
+
+    def _apc_package_line_domain(self, picking, order_line):
+        if picking and order_line:
+            return ["|", ("picking_id", "=", picking.id),
+                    ("order_line_id", "=", order_line.id)]
+        if picking:
+            return [("picking_id", "=", picking.id)]
+        if order_line:
+            return [("order_line_id", "=", order_line.id)]
+        return None
+
+    def _apc_prepare_items(self, picking, order_line, goods_value):
+        items = []
+
+        # Priority 1: sale.package.line (set on SO line or picking)
+        domain = self._apc_package_line_domain(picking, order_line)
+        package_lines = (
+            self.env["sale.package.line"].search(domain) if domain
+            else self.env["sale.package.line"])
         if package_lines:
             value_per_pkg = goods_value / len(package_lines) if len(package_lines) > 1 else goods_value
             for pkg in package_lines:
@@ -236,7 +258,7 @@ class DeliveryCarrier(models.Model):
             return {"Items": {"Item": items}}
 
         # Priority 2: stock.quant.package (physical packages on picking)
-        package_details = picking.package_ids
+        package_details = picking.package_ids if picking else self.env["stock.quant.package"]
         if package_details:
             value_per_pkg = goods_value / len(package_details) if len(package_details) > 1 else goods_value
             for pkg in package_details:
@@ -267,8 +289,12 @@ class DeliveryCarrier(models.Model):
                 return {"Items": {"Item": items[0]}}
             return {"Items": {"Item": items}}
 
-        # Fallback: single parcel with picking-level weight/dimensions
-        weight = max(0.01, round(picking.weight or 0.1, 3))
+        # Fallback: single parcel; weight from picking, or the SO line's
+        # total_weight when there is no picking (e.g. Transport Orders).
+        fallback_weight = (
+            picking.weight if picking
+            else (order_line.total_weight if order_line else 0.0))
+        weight = max(0.01, round(fallback_weight or 0.1, 3))
         items.append({
             "Type": "PARCEL",
             "Weight": str(weight),
@@ -283,12 +309,14 @@ class DeliveryCarrier(models.Model):
 
     def _apc_prepare_payload(self, leg, shipper=None, recipient=None):
         self.ensure_one()
-        picking = leg.picking_id
-        if not picking:
+        picking, order_line, sale_order = self._apc_leg_goods_source(leg)
+        if not picking and not order_line:
             raise UserError(
-                _("This leg has no linked Delivery Order to source parcels from."))
-        _log.info("APC preparing payload for leg %s, picking %s, order_type %s",
-                  leg.id, picking.name, leg.order_type)
+                _("This leg has no linked Delivery Order or Sale Order Line "
+                  "to source parcels from."))
+        _log.info("APC preparing payload for leg %s, source %s, order_type %s",
+                  leg.id, picking.name if picking else order_line.display_name,
+                  leg.order_type)
 
         shipper = shipper or (
             self._apc_leg_party(leg, "from")
@@ -301,18 +329,30 @@ class DeliveryCarrier(models.Model):
 
         self._apc_pur_cutoff_valid(leg)
 
-        collection_date = leg.from_date or picking.scheduled_date
+        collection_date = leg.from_date or (
+            picking.scheduled_date if picking
+            else (sale_order.commitment_date if sale_order else False))
         if not collection_date:
             raise UserError(_("Collection date is required."))
         if isinstance(collection_date, str):
             collection_date = fields.Date.from_string(collection_date)
         date_str = collection_date.strftime("%d/%m/%Y")
 
-        # Goods value and description
+        # Goods value and description. Transport Orders carry a separate
+        # goods manifest (sale_order.product_line_ids, for customs/invoice
+        # purposes) distinct from the freight charge order line - use that
+        # instead of the order total, which is the freight cost, not the
+        # value of what's being shipped.
         goods_value = 0.0
-        if picking.sale_id and picking.sale_id.order_line:
+        if leg.order_type == "transport" and sale_order and sale_order.product_line_ids:
+            goods_value = sum(
+                (pl.price or 0.0) * (pl.qty or 0.0)
+                for pl in sale_order.product_line_ids)
+        elif picking and picking.sale_id and picking.sale_id.order_line:
             goods_value = picking.sale_id.amount_total or 0.0
-        goods_desc = self._apc_clean_instructions(picking.name) or "Goods"
+        goods_desc = self._apc_clean_instructions(
+            picking.name if picking
+            else (sale_order.name if sale_order else False)) or "Goods"
 
         # Build Delivery block (matches APC API v3 structure)
         delivery = {
@@ -345,13 +385,19 @@ class DeliveryCarrier(models.Model):
         }
 
         # Build ShipmentDetails block (inside Order, not top-level)
-        package_line_count = self.env["sale.package.line"].search_count(
-            [("picking_id", "=", picking.id)])
-        num_pieces = package_line_count or len(picking.package_ids) or 1
+        package_line_domain = self._apc_package_line_domain(picking, order_line)
+        package_line_count = (
+            self.env["sale.package.line"].search_count(package_line_domain)
+            if package_line_domain else 0)
+        num_pieces = (
+            package_line_count
+            or (len(picking.package_ids) if picking else 0)
+            or 1)
         shipment_details = {
             "NumberOfPieces": str(num_pieces),
         }
-        shipment_details.update(self._apc_prepare_items(picking))
+        shipment_details.update(
+            self._apc_prepare_items(picking, order_line, goods_value))
 
         # Build Order
         order = {
@@ -359,7 +405,8 @@ class DeliveryCarrier(models.Model):
             "ReadyAt": self.apc_default_ready_at or "09:00",
             "ClosedAt": self.apc_default_closed_at or "17:00",
             "Reference": self._apc_clean_string(
-                leg.order_id.name if leg.order_id else picking.name, 35) or "",
+                leg.order_id.name if leg.order_id
+                else (picking.name if picking else ""), 35) or "",
             "Delivery": delivery,
             "GoodsInfo": goods_info,
             "ShipmentDetails": shipment_details,
