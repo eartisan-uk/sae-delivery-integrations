@@ -6,6 +6,13 @@ from odoo import fields, models
 class SaleTransportLeg(models.Model):
     _inherit = "sale.transport.leg"
 
+    to_email = fields.Char(string="Delivery Email")
+    to_tel = fields.Char(string="Delivery Phone")
+    to_mobile = fields.Char(string="Delivery Mobile")
+    from_email = fields.Char(string="Collection Email")
+    from_tel = fields.Char(string="Collection Phone")
+    from_mobile = fields.Char(string="Collection Mobile")
+
     apc_order_number = fields.Char(
         string="APC Order Number",
         help="18-digit APC OrderNumber returned after booking.",
@@ -82,3 +89,38 @@ class SaleTransportLeg(models.Model):
             "97": "none",
         }
         return status_map.get(str(status_code), False)
+
+    def _apply_booking_result(self, result):
+        """Write booking outcome + persist the label to APC-specific field.
+
+        Overrides the core to also capture the APC ``OrderNumber`` (18-digit)
+        that the adapter stashes in ``raw_response``.
+        """
+        self.ensure_one()
+        vals = {
+            "tracking_code": result.tracking_number or self.tracking_code,
+            "booking_ref": result.consignment_ref or self.booking_ref,
+            "booking_state": "booked",
+            "booking_message": False,
+        }
+        # Extract OrderNumber from the raw booking response.
+        raw = result.raw_response or {}
+        response = raw.get("response", {}) if isinstance(raw, dict) else {}
+        if isinstance(response, dict):
+            orders = response.get("Orders", {})
+            if isinstance(orders, list):
+                orders = orders[0] if orders else {}
+            order_entry = (
+                orders.get("Order", orders) if isinstance(orders, dict) else {})
+            if isinstance(order_entry, list):
+                order_entry = order_entry[0] if order_entry else {}
+            if isinstance(order_entry, dict):
+                order_number = order_entry.get("OrderNumber", "") or ""
+                if order_number:
+                    vals["apc_order_number"] = order_number
+        self.write(vals)
+        if result.label:
+            filename = result.label_filename or ("APC-Label-%s" % self.id)
+            attachment = self._leg_store_label(filename, result.label)
+            if attachment:
+                self.write({"apc_label_attachment_id": attachment.id})

@@ -108,11 +108,13 @@ class DeliveryCarrier(models.Model):
         return postcode
 
     def _apc_clean_phone(self, value):
-        value = self._apc_clean_string(value, max_length=15)
+        value = self._apc_clean_string(value, max_length=20)
         if not value:
             return False
-        cleaned = "".join(ch for ch in value if ch.isdigit() or ch in " +-()")
-        return cleaned[:15] or False
+        cleaned = "".join(ch for ch in value if ch.isdigit() or ch == "+")
+        if cleaned.startswith("+44"):
+            cleaned = "+" + cleaned[1:].replace(" ", "")
+        return cleaned[:20] or False
 
     def _apc_clean_email(self, value):
         value = self._apc_clean_string(value, max_length=64)
@@ -133,8 +135,8 @@ class DeliveryCarrier(models.Model):
         return value.upper()
 
 # ====================================================================
-# Address party mapping (leverages leg's from_location/to_location fallback)
-# ====================================================================
+    # Address party mapping (leverages leg's from_location/to_location fallback)
+    # ====================================================================
     @staticmethod
     def _apc_leg_party(leg, side):
         partner = leg.from_location if side == "from" else leg.to_location
@@ -147,7 +149,8 @@ class DeliveryCarrier(models.Model):
         return {
             "name": get("contact") or p_get("name"),
             "company_name": p_get("name") or get("contact"),
-            "phone": get("tel") or p_get("phone") or p_get("mobile"),
+            "phone": get("tel") or p_get("phone"),
+            "mobile": get("mobile") or p_get("mobile"),
             "email": get("email") or p_get("email"),
             "street": get("address") or p_get("street"),
             "street2": p_get("street2"),
@@ -204,11 +207,36 @@ class DeliveryCarrier(models.Model):
 
     def _apc_prepare_items(self, picking):
         items = []
-        package_details = picking.package_ids
         goods_value = 0.0
         if picking.sale_id and picking.sale_id.order_line:
             goods_value = picking.sale_id.amount_total or 0.0
 
+        # Priority 1: sale.package.line (set on SO or picking)
+        package_lines = self.env["sale.package.line"].search(
+            [("picking_id", "=", picking.id)])
+        if package_lines:
+            value_per_pkg = goods_value / len(package_lines) if len(package_lines) > 1 else goods_value
+            for pkg in package_lines:
+                length = int((pkg.length or 0) / 10) if pkg.length else 0
+                width = int((pkg.width or 0) / 10) if pkg.width else 0
+                height = int((pkg.height or 0) / 10) if pkg.height else 0
+                weight = max(0.01, round(pkg.weight, 3)) if pkg.weight else 0.1
+                quantity = pkg.quantity or 1
+                for _ in range(quantity):
+                    items.append({
+                        "Type": "PARCEL",
+                        "Weight": str(weight),
+                        "Length": str(length),
+                        "Width": str(width),
+                        "Height": str(height),
+                        "Value": str(int(value_per_pkg) if value_per_pkg else 0),
+                    })
+            if len(items) == 1:
+                return {"Items": {"Item": items[0]}}
+            return {"Items": {"Item": items}}
+
+        # Priority 2: stock.quant.package (physical packages on picking)
+        package_details = picking.package_ids
         if package_details:
             value_per_pkg = goods_value / len(package_details) if len(package_details) > 1 else goods_value
             for pkg in package_details:
@@ -218,9 +246,13 @@ class DeliveryCarrier(models.Model):
                 weight = 0.1
                 pkg_type = getattr(pkg, "package_type_id", None)
                 if pkg_type:
-                    length = int(pkg_type.length or 0) if getattr(pkg_type, "length", None) else 0
-                    width = int(pkg_type.width or 0) if getattr(pkg_type, "width", None) else 0
-                    height = int(pkg_type.height or 0) if getattr(pkg_type, "height", None) else 0
+                    # APC expects dimensions in cm; Odoo stores them in mm
+                    length = int((pkg_type.packaging_length or 0) / 10) if getattr(pkg_type, "packaging_length", None) else 0
+                    width = int((pkg_type.width or 0) / 10) if getattr(pkg_type, "width", None) else 0
+                    height = int((pkg_type.height or 0) / 10) if getattr(pkg_type, "height", None) else 0
+                    # Fallback to package type base_weight if package has no weight
+                    if not getattr(pkg, "weight", None) and getattr(pkg_type, "base_weight", None):
+                        weight = max(0.01, round(pkg_type.base_weight, 3))
                 if getattr(pkg, "weight", None):
                     weight = max(0.01, round(pkg.weight, 3))
                 items.append({
@@ -231,18 +263,20 @@ class DeliveryCarrier(models.Model):
                     "Height": str(height),
                     "Value": str(int(value_per_pkg) if value_per_pkg else 0),
                 })
-        else:
-            weight = max(0.01, round(picking.weight or 0.1, 3))
-            items.append({
-                "Type": "PARCEL",
-                "Weight": str(weight),
-                "Length": "0",
-                "Width": "0",
-                "Height": "0",
-                "Value": str(int(goods_value) if goods_value else 0),
-            })
-        # APC v3 quirk: Items wrapper always present; Item is object for one
-        # piece, array for two or more (guide p.11).
+            if len(items) == 1:
+                return {"Items": {"Item": items[0]}}
+            return {"Items": {"Item": items}}
+
+        # Fallback: single parcel with picking-level weight/dimensions
+        weight = max(0.01, round(picking.weight or 0.1, 3))
+        items.append({
+            "Type": "PARCEL",
+            "Weight": str(weight),
+            "Length": "0",
+            "Width": "0",
+            "Height": "0",
+            "Value": str(int(goods_value) if goods_value else 0),
+        })
         if len(items) == 1:
             return {"Items": {"Item": items[0]}}
         return {"Items": {"Item": items}}
@@ -292,6 +326,8 @@ class DeliveryCarrier(models.Model):
             "Contact": {
                 "PersonName": self._apc_clean_string(recipient.get("name"), 35),
                 "PhoneNumber": self._apc_clean_phone(recipient.get("phone")),
+                "MobileNumber": self._apc_clean_phone(recipient.get("mobile")),
+                "Email": self._apc_clean_email(recipient.get("email")),
             },
         }
         # Remove False values from Contact
@@ -309,7 +345,9 @@ class DeliveryCarrier(models.Model):
         }
 
         # Build ShipmentDetails block (inside Order, not top-level)
-        num_pieces = len(picking.package_ids) or 1
+        package_line_count = self.env["sale.package.line"].search_count(
+            [("picking_id", "=", picking.id)])
+        num_pieces = package_line_count or len(picking.package_ids) or 1
         shipment_details = {
             "NumberOfPieces": str(num_pieces),
         }
@@ -351,6 +389,8 @@ class DeliveryCarrier(models.Model):
                 "Contact": {
                     "PersonName": self._apc_clean_string(shipper.get("name"), 35),
                     "PhoneNumber": self._apc_clean_phone(shipper.get("phone")),
+                    "MobileNumber": self._apc_clean_phone(shipper.get("mobile")),
+                    "Email": self._apc_clean_email(shipper.get("email")),
                 },
             }
             collection["Contact"] = {

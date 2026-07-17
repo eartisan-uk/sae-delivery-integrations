@@ -65,6 +65,13 @@ Build a new module `apc_uk_shipping` (mirror `dpd_local_uk_shipping`) that:
   set only the partner.
 - **Weight**: `picking.shipping_weight` is often 0 (no product weights); fall
   back to `leg.carrier_service_id.chargeable_weight`, floor to a minimum.
+- **Package dimensions**: read in priority order:
+  1. `sale.package.line` (set on SO or linked to picking) — `length/width/height/weight`
+     in mm, converted to cm; handles `quantity` for multiple parcels
+  2. `stock.quant.package` (physical packages on picking) — dimensions from
+     `package_type_id.packaging_length/width/height` in mm; weight from package
+     or fallback to `package_type_id.base_weight`
+  3. Fallback: picking-level weight only, dimensions = 0
 - **Reference on the label**: use the sale order number `leg.order_id.name`
   (not the delivery-order name).
 - **HTML→PDF labels**: force single-line text (`white-space:nowrap;

@@ -180,6 +180,7 @@ class SaleTransportLeg(models.Model):
                 "title": _("Transport Booking"),
                 "message": message,
                 "sticky": level == "danger",
+                "next": {"type": "ir.actions.client", "tag": "soft_reload"},
             },
         }
 
