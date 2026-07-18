@@ -1,0 +1,54 @@
+# SAE Driver Manifest (GRN)
+
+Prints a Goods Release Note / Driver Manifest for selected internal transport legs
+on `staging.mysae.net` (Odoo 18). Built to pair with the A1 list-view tweak
+(view id 2927) that exposes Internal / Driver / Vehicle as bulk-editable columns.
+
+## How it works for the operator
+
+1. Open the Transport Legs list.
+2. Tick the legs for one run (already stamped with driver + vehicle via A1 bulk edit).
+3. Print > **Driver Manifest (GRN)**.
+4. One landscape page per distinct driver in the selection: run header, job table,
+   loading + driver sign-off block.
+
+## Files
+
+- `__manifest__.py`
+- `report/driver_manifest_report.xml` — paperformat + `ir.actions.report` (list binding)
+- `report/driver_manifest_templates.xml` — the QWeb run-sheet
+
+## Field bindings
+
+| GRN column | Source |
+|---|---|
+| Customer | `order_id.partner_id.name` |
+| Job No | `picking_id.name` (fallback `reference` / `name`) |
+| Del/Coll | `picking_id.picking_type_id.code` (incoming = Collect, else Deliver) |
+| Town / Post Code | `from_*` if Collect else `to_*` |
+| Description | `picking_id.weight` + `picking_id.package_ids` summary |
+| Special Instructions | `from_instructions` if Collect else `to_instructions` |
+| Header Driver / Vehicle / Date | `driver_id` / `fleet_id` / leg run date |
+
+## Two things to verify on deploy
+
+1. **`binding_model_id` ref** in `driver_manifest_report.xml` is
+   `sale_goods_order.model_sale_transport_leg`. If `sale_goods_order` registers
+   the model under a different xml-id, adjust. Confirm via `ir.model` where
+   `model = 'sale.transport.leg'`.
+2. **`picking_type_id.code`** drives Collect vs Deliver. Confirmed `picking_id`
+   is populated on real legs (e.g. leg 17 -> WH/OUT/00021 = outgoing = Deliver).
+   If any internal legs have no picking, Del/Coll defaults to Deliver — decide if
+   that fallback is acceptable or should read the depot-as-endpoint rule instead.
+
+## Next (step 3, not in this module)
+
+The per-job Collection Detail / Delivery Note (SAE-branded) needs the
+`sale.package.line` model inspected for dimensions / qty / goods-description
+fields. That is a separate report; this module only covers the run-sheet.
+
+## Note on Excel
+
+For an Excel variant of the same run-sheet, `reports_designer` (already installed)
+can template it from the same `sale.transport.leg` selection. The PDF here covers
+the day-one print need; add Excel later if required.

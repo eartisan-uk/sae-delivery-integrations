@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <template id="report_driver_manifest">
+        <t t-call="web.html_container">
+            <!-- Distinct drivers in the selected legs -> one run page each -->
+            <t t-set="drivers" t-value="docs.mapped('driver_id')"/>
+
+            <t t-foreach="drivers" t-as="driver">
+                <t t-set="run_legs"
+                   t-value="docs.filtered(lambda l: l.driver_id.id == driver.id).sorted(key=lambda l: (l.to_postcode or l.from_postcode or ''))"/>
+                <t t-set="first" t-value="run_legs[:1]"/>
+                <t t-set="run_date" t-value="first.to_date or first.from_date"/>
+
+                <t t-call="web.external_layout">
+                    <div class="page">
+
+                        <h3 style="text-align:center; margin-bottom:8px;">
+                            Goods Release Note / Driver Manifest
+                        </h3>
+
+                        <!-- Run header -->
+                        <table style="width:100%; margin-bottom:8px; font-size:12px;">
+                            <tr>
+                                <td><strong>Driver:</strong> <span t-field="driver.name"/></td>
+                                <td><strong>Vehicle:</strong>
+                                    <span t-out="first.fleet_id.name or ''"/>
+                                </td>
+                                <td><strong>Date:</strong>
+                                    <span t-if="run_date" t-out="run_date"/>
+                                </td>
+                            </tr>
+                        </table>
+
+                        <!-- Job lines -->
+                        <table class="table table-sm table-bordered" style="font-size:10px;">
+                            <thead>
+                                <tr>
+                                    <th>Ord</th>
+                                    <th>Customer</th>
+                                    <th>Job No</th>
+                                    <th>Del/Coll</th>
+                                    <th>Town / Post Code</th>
+                                    <th>Description</th>
+                                    <th>Special Instructions</th>
+                                    <th style="width:70px; text-align:center;">Loaded<br/>Y / N/A</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-set="row_no" t-value="0"/>
+                                <t t-foreach="run_legs" t-as="leg">
+                                    <t t-set="row_no" t-value="row_no + 1"/>
+                                    <!-- incoming picking = Collect, otherwise Deliver -->
+                                    <t t-set="is_collect"
+                                       t-value="leg.picking_id and leg.picking_id.picking_type_id.code == 'incoming'"/>
+                                    <t t-set="pk" t-value="leg.picking_id"/>
+                                    <tr>
+                                        <td><span t-out="row_no"/></td>
+                                        <td><span t-out="leg.order_id.partner_id.name or leg.to_location.name or ''"/></td>
+                                        <td><span t-out="(pk and pk.name) or leg.reference or leg.name or ''"/></td>
+                                        <td><span t-out="'Collect' if is_collect else 'Deliver'"/></td>
+                                        <td>
+                                            <span t-out="(leg.from_town or '') if is_collect else (leg.to_town or '')"/>
+                                            <span t-out="(leg.from_postcode or '') if is_collect else (leg.to_postcode or '')"/>
+                                        </td>
+                                        <td>
+                                            <t t-if="pk and pk.package_ids">
+                                                <t t-foreach="pk.package_ids" t-as="pl">
+                                                    <div>
+                                                        <t t-if="pl.quantity"><t t-out="pl.quantity"/> x </t>
+                                                        <t t-out="pl.package_type_id.name or pl.name or 'Package'"/>
+                                                        <t t-if="pl.weight">, <t t-out="'%.1f' % pl.weight"/> Kg</t>
+                                                    </div>
+                                                </t>
+                                            </t>
+                                            <t t-elif="pk and pk.weight">
+                                                <t t-out="'%.1f' % pk.weight"/> <t t-out="pk.weight_uom_name or 'Kg'"/>
+                                            </t>
+                                        </td>
+                                        <td><span t-out="(leg.from_instructions or '') if is_collect else (leg.to_instructions or '')"/></td>
+                                        <td></td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+
+                        <!-- Sign-off block -->
+                        <table style="width:100%; margin-top:28px; font-size:11px;">
+                            <tr>
+                                <td style="width:50%; vertical-align:top;">
+                                    <strong>Vehicle loaded by:</strong><br/><br/>
+                                    Sign: ______________________<br/><br/>
+                                    Print: ______________________<br/><br/>
+                                    Date / Time: ________________
+                                </td>
+                                <td style="width:50%; vertical-align:top;">
+                                    <strong>Driver Confirmation:</strong><br/><br/>
+                                    Sign: ______________________<br/><br/>
+                                    Print: ______________________<br/><br/>
+                                    Date / Time: ________________
+                                </td>
+                            </tr>
+                        </table>
+
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+</odoo>
