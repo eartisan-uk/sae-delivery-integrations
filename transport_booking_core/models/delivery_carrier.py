@@ -31,3 +31,13 @@ class DeliveryCarrier(models.Model):
              "'API Booking'). Provider add-ons extend this list via "
              "selection_add.",
     )
+
+    def _find_by_transport_code(self, code):
+        """Resolve a pricing-engine carrier code (e.g. 'DPD') to a
+        delivery.carrier. Single source of truth - used both to resolve a
+        leg's booking adapter and to keep sale.carrier.service.option's
+        carrier_id in sync, so the two never drift apart again."""
+        code = (code or "").strip()
+        if not code:
+            return self.browse()
+        return self.search([("transport_carrier_code", "=ilike", code)], limit=1)

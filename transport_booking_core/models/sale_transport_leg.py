@@ -41,16 +41,12 @@ class SaleTransportLeg(models.Model):
     def _leg_find_delivery_carrier(self):
         """Resolve this leg's selected pricing option to a delivery.carrier.
 
-        The pricing engine fills the free-text ``carrier_code`` (e.g. 'DPD');
-        we match it against ``delivery.carrier.transport_carrier_code``. No
-        match (e.g. 'CX') returns an empty recordset.
+        No match (e.g. code 'CX' with no registered carrier) returns an
+        empty recordset.
         """
         self.ensure_one()
-        code = (self.carrier_code or "").strip()
-        if not code:
-            return self.env["delivery.carrier"]
-        return self.env["delivery.carrier"].search(
-            [("transport_carrier_code", "=ilike", code)], limit=1)
+        return self.env["delivery.carrier"]._find_by_transport_code(
+            self.carrier_code)
 
     def _leg_booking_adapter(self, carrier):
         return TransportBookingAdapter.for_provider(carrier.transport_provider)
